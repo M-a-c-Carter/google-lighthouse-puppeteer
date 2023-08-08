@@ -11,19 +11,18 @@ class LighthousePuppeteer {
                 params: '',
                 verbose: false
             },
-            puppeteer: {
-            },
+            puppeteer: {},
             chromium: '',
         };
         this.options = Object.assign({}, this.defaultOptions);
         this.browser = null;
     }
 
-    definePuppeteerOptions(opts = []) {
+    definePuppeteerOptions(opts = {}) {
         for (let name in opts) {
-            if (opts[name].startsWith('--puppeteer-')) {
+            if (opts.hasOwnProperty(name) && opts[name].startsWith('--puppeteer-')) {
                 const param = opts[name].replace('--puppeteer-', '');
-                const nextParam = opts[name - -1];
+                const nextParam = opts[name + 1];
                 this.options.puppeteer[param] = nextParam && !nextParam.startsWith('--puppeteer-') ? nextParam : true;
             }
         }
@@ -31,7 +30,7 @@ class LighthousePuppeteer {
     }
 
     defineOptions(opts = {}) {
-        if (opts.main.port) {
+        if (opts.main && opts.main.port) {
             this.options.debugPort = opts.main.port;
         }
         if (opts.lighthouse && opts.lighthouse.output_directory) {
@@ -46,10 +45,10 @@ class LighthousePuppeteer {
         if (opts.main && opts.main.chromium_params) {
             this.options.chromium = opts.main.chromium_params;
         }
-        if (!opts.main.verbose) {
+        if (!opts.main || !opts.main.verbose) {
             this.options.lighthouse.params += '--quiet';
         }
-        if (opts.main.verbose && opts.main.verbose.length > 1) {
+        if (opts.main && opts.main.verbose && opts.main.verbose.length > 1) {
             this.options.lighthouse.verbose = true;
         }
         this.definePuppeteerOptions(opts._unknown || []);
@@ -67,49 +66,43 @@ class LighthousePuppeteer {
         const CHROME_PATH = process.env.CHROME_PATH;
 
         if (CHROME_PATH && CHROME_PATH.length > 0) {
-            console.debug('Chrome bin path configured through environment variable: ', CHROME_PATH);
+            console.error('Chrome bin path configured through environment variable:', CHROME_PATH);
             this.options.puppeteer.executablePath = CHROME_PATH;
         }
         return this;
     }
 
-    exec(modulePath, opts = {}) {
-        return new Promise((resolveGlobal, reject) => {
+    async exec(modulePath, opts = {}) {
+        try {
             this.defineOptions(opts);
-            const testcase = typeof (modulePath) === 'object' ? modulePath : require(modulePath);
-            if (typeof(testcase.connect) !== 'function') {
-                console.log(`${modulePath}: Module incorrectly formatted. Module should have "connect" method!`);
-                process.exit(-3);
+            const testcase = typeof modulePath === 'object' ? modulePath : require(modulePath);
+            if (typeof testcase.connect !== 'function') {
+                console.error(`${modulePath}: Module incorrectly formatted. Module should have "connect" method!`);
+                return;
             }
-            if (typeof(testcase.getUrls) !== 'function') {
-                console.log(`${modulePath}: Module incorrectly formatted. Module should have "getUrls" method!`);
-                process.exit(-4);
+            if (typeof testcase.getUrls !== 'function') {
+                console.error(`${modulePath}: Module incorrectly formatted. Module should have "getUrls" method!`);
+                return;
             }
-            this.puppeteer.launch(this.options.puppeteer)
-                .then(testcase.connect)
-                .then(b => new Promise((resolve) => {
-                    this.browser = b;
-                    resolve(b);
-                }))
-                .then(b => new Promise((resolve) => {
-                    const lighthouseOptions = {
-                        verbose: this.options.lighthouse.verbose,
-                        sites: testcase.getUrls(),
-                        html: this.options.lighthouse.html,
-                        out: this.options.lighthouse.out,
-                        useGlobal: true,
-                        params: `--port ${this.options.debugPort} ${this.options.lighthouse.params}`,
-                    };
-                    this.lightHouseBatch(lighthouseOptions);
-                    resolve(b);
-                }))
-                .then(b => b.close())
-                .then(resolveGlobal)
-                .catch((err) => {
-                    this.browser && this.browser.close();
-                    reject(err);
-                });
-        });
+            const browser = await this.puppeteer.launch(this.options.puppeteer);
+            const b = await testcase.connect(browser);
+            this.browser = b;
+            const lighthouseOptions = {
+                verbose: this.options.lighthouse.verbose,
+                sites: testcase.getUrls(),
+                html: this.options.lighthouse.html,
+                out: this.options.lighthouse.out,
+                useGlobal: true,
+                params: `--port ${this.options.debugPort} ${this.options.lighthouse.params}`,
+            };
+            await this.lightHouseBatch(lighthouseOptions);
+            await b.close();
+        } catch (err) {
+            if (this.browser) {
+                await this.browser.close();
+            }
+            throw err;
+        }
     }
 }
 
